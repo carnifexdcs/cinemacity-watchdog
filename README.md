@@ -10,7 +10,7 @@ Forked from [TarkDetrius/cinemacity-watchdog](https://github.com/TarkDetrius/cin
 
 ## How it works
 
-- The workflow `.github/workflows/watch.yml` runs 4 times an hour (at :08, :21, :38 and :51). The goal is detection within ~30 minutes; the extra runs are insurance against GitHub dropping scheduled runs under load. The minutes are deliberately off :00 and :30 and spread out to avoid peak times. The repo is public, so Actions minutes are free and unlimited.
+- The workflow `.github/workflows/watch.yml` checks about every 11 minutes. GitHub's own scheduler turned out to be too unreliable for this (its runs arrived hours late or not at all), so each run queues the next one itself: after the check it waits 10 minutes (a wait timer on the `ten-minute-wait` environment, which uses no runner time) and then starts the workflow again. An hourly cron line is kept only as a backup that restarts this chain if it ever breaks. The repo is public, so Actions minutes are free and unlimited.
 - `watch.py` downloads the schedule from the public cinemacity.cz JSON API (`/cz/data-api-service/v1/quickbook/10101/…`) — no key, no login.
 - The list of showtimes already seen is kept in `state/seen.json`, which the workflow commits back after each run. Only additions are reported.
 - New showtimes → an issue with the time, hall, flags (70mm / subtitles / sold out) and a direct link to buy tickets (it opens seat selection). Showtimes that disappear from the schedule (cancelled screenings) are reported too.
@@ -40,11 +40,11 @@ To watch something else, change `FILM_PATTERN` (and `FILM_DISPLAY`, and `AUDITOR
 
 ## Running it by hand
 
-Actions → Cinema City watchdog → Run workflow. Ticking **force_report** reports all current showtimes, including known ones — handy for checking it's alive, or as "show me what's on right now".
+Actions → Cinema City watchdog → Run workflow. Ticking **force_report** reports all current showtimes, including known ones — handy for checking it's alive, or as "show me what's on right now". A manual run also restarts the chain of checks if it has ever stopped.
 
 ## Maintenance
 
-- **Actions quota:** the repo is public on purpose — Actions minutes are free and unlimited for public repos. If it were made private, runs would count against the free 2,000 minutes a month and this schedule would use them up; you'd then need a slower cron (e.g. `23 */2 * * *`).
+- **Actions quota:** the repo is public on purpose — Actions minutes are free and unlimited for public repos. If it were made private, runs would count against the free 2,000 minutes a month and checking this often would use them up; you'd then need a longer wait timer on the `ten-minute-wait` environment (Settings → Environments).
 - **60-day pause:** GitHub automatically disables scheduled workflows after 60 days with no repo activity. That won't happen here — the workflow commits its own state.
 - **When Dune's run ends,** the watchdog just stops reporting anything. Either turn it off (Actions → Cinema City watchdog → Disable workflow) or change `FILM_PATTERN` to another film.
-- **If the Cinema City API changes,** the workflow will fail with an error and GitHub will email you about it.
+- **If a check fails** (for example because the Cinema City API changes), the workflow opens one issue titled "Watchdog problem: a check failed", assigned to you, and closes it by itself once checks work again.
