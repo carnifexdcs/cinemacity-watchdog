@@ -11,7 +11,7 @@ name: Cinema City watchdog
 # avoid the busiest moments.
 on:
   schedule:
-    - cron: "8,38 * * * *"
+    - cron: "9,38 * * * *"
     - cron: "21,51 * * * *"
   workflow_dispatch:
     inputs:
