@@ -123,7 +123,7 @@ jobs:
     # Cancelling a run does stop it.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     # The environment's 10-minute wait timer is the pause between checks.
     environment:
       name: ten-minute-wait
@@ -158,12 +158,13 @@ jobs:
             exit 0
           fi
 
-          for attempt in 1 2 3; do
+          # Keep trying for about 10 minutes, so a short GitHub hiccup does not end the chain.
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
             if gh workflow run watch.yml --ref "$GITHUB_REF_NAME"; then
               echo "Next check queued."
               exit 0
             fi
-            sleep 20
+            sleep 60
           done
           echo "::error::Could not queue the next check."
           exit 1
