@@ -1,114 +1,50 @@
 # cinemacity-watchdog
 
-Hlídá rozpis [Cinema City](https://www.cinemacity.cz) a když přibude nový termín
-**Duny v IMAXu**, založí v tomhle repu issue a **přiřadí ho vlastníkovi repa**.
-GitHub z něj pošle e-mail i push do mobilní appky.
+Watches the Cinema City schedule and, when a new **Dune: Part Three** showtime appears in IMAX, opens an issue in this repo and assigns it to the repo owner. GitHub then sends an email and a push notification to the GitHub mobile app.
 
-Na přiřazení záleží: e-mail chodí ve výchozím nastavení jen u „Participating"
-notifikací (přiřazení, zmínky, odpovědi). Pouhé sledování repa („Watching")
-dává jen web/mobile notifikaci — e-mail je pro něj v Settings → Notifications
-vypnutý, dokud si ho člověk nezapne.
+The assignment matters: by default GitHub only emails "Participating" notifications (assignments, mentions, replies). Merely watching a repo gives only web/mobile notifications — email for that is off in Settings → Notifications unless you turn it on.
 
-Běží v GitHub Actions, takže funguje i když je Mac vypnutý.
+It runs in GitHub Actions, so it works even when your computer is off.
 
-## Jak to funguje
+Forked from [TarkDetrius/cinemacity-watchdog](https://github.com/TarkDetrius/cinemacity-watchdog) and translated to English.
 
-- Workflow [`.github/workflows/watch.yml`](.github/workflows/watch.yml) běží
-  **4× za hodinu** (v :08, :21, :38 a :51). Cílem je detekce do ~30 minut;
-  víc pokusů je pojistka proti tomu, že GitHub naplánované běhy pod zátěží
-  houfně zahazuje. Minuty schválně mimo :00 a :30 a rozprostřené, ať netrefí
-  stejnou špičku. Repo je veřejné, takže minuty Actions jsou zdarma bez limitu.
-- [`watch.py`](watch.py) stáhne rozpis z veřejného JSON API cinemacity.cz
-  (`/cz/data-api-service/v1/quickbook/10101/…`) — bez klíče, bez přihlášení.
-- Seznam už viděných představení drží v [`state/seen.json`](state/seen.json),
-  který si workflow po každém běhu commitne zpátky. Hlásí se tedy jen přírůstky.
-- Nová představení → issue s časem, sálem, příznaky (70mm / titulky / vyprodáno)
-  a přímým odkazem na nákup vstupenky. Hlásí se i termíny, které z rozpisu
-  **zmizely** (zrušené projekce).
-- Issue se **hned po založení zavírá**. Slouží jen jako doručovací kanál pro
-  e-mail, který GitHub pošle už při jeho vzniku — seznam otevřených issues tak
-  zůstává prázdný a nic není potřeba uklízet ručně. Obsah zůstává čitelný mezi
-  zavřenými.
-- Časy se počítají v zóně kina (`Europe/Prague`), ne v UTC runneru. Bez toho
-  by projekce, která právě doběhla, vypadala jako budoucí a při zmizení
-  z rozpisu by se falešně nahlásila jako zrušená.
+## How it works
 
-Jeden běh je ~45 HTTP dotazů a trvá ~20 sekund.
+- The workflow `.github/workflows/watch.yml` runs 4 times an hour (at :08, :21, :38 and :51). The goal is detection within ~30 minutes; the extra runs are insurance against GitHub dropping scheduled runs under load. The minutes are deliberately off :00 and :30 and spread out to avoid peak times. The repo is public, so Actions minutes are free and unlimited.
+- `watch.py` downloads the schedule from the public cinemacity.cz JSON API (`/cz/data-api-service/v1/quickbook/10101/…`) — no key, no login.
+- The list of showtimes already seen is kept in `state/seen.json`, which the workflow commits back after each run. Only additions are reported.
+- New showtimes → an issue with the time, hall, flags (70mm / subtitles / sold out) and a direct link to buy tickets (it opens seat selection). Showtimes that disappear from the schedule (cancelled screenings) are reported too.
+- The issue is closed right after it's created. It's only a delivery channel for the notification, which GitHub sends when the issue is created — so the list of open issues stays empty and nothing needs cleaning up. The content stays readable under closed issues.
+- Times are calculated in the cinema's time zone (Europe/Prague), not the runner's UTC. Without that, a screening that just ended would look like a future one and, once gone from the schedule, would be falsely reported as cancelled.
 
-## Co přesně se hlídá
+One run is about 45 HTTP requests and takes about 20 seconds.
 
-Představení, kde **název filmu** obsahuje `duna` **a** **název sálu** obsahuje
-`imax`. Aktuálně tomu odpovídá jediné kino v ČR — **Praha Flora**, sál
-`IMAX VOLVO`, kde Duna: část třetí běží v 70mm s titulky.
+## What exactly is watched
 
-Aby se netahal celý rozpis všech třinácti kin, hledá se dvoufázově: nejdřív se
-zjistí, která kina vůbec mají IMAX sál (jedna sonda na nejbližší hrací den plus
-nápověda z API přes atribut `70-mm`), a do hloubky se projdou jen ta. Kdyby
-IMAX přibyl v jiném kině, chytí se to samo.
+Showtimes where the film name contains `třetí` and the hall name contains `imax`. The API returns Czech titles, and Dune: Part Three is listed as *Duna: část třetí* ("third part"), so `třetí` matches Part Three only and skips re-runs of the earlier Dune films. Right now that means one cinema in the Czech Republic — Prague Flora, hall IMAX VOLVO, where Part Three plays in 70mm with subtitles.
 
-Chování jde změnit proměnnými prostředí ve workflow:
+To avoid downloading the full schedule of all thirteen cinemas, the search runs in two phases: first it finds which cinemas have an IMAX hall at all (one probe on the nearest showing day, plus a hint from the API via the `70-mm` attribute), and only those are checked in depth. If IMAX were added at another cinema, it would be picked up automatically.
 
-| Proměnná | Výchozí | Význam |
-| --- | --- | --- |
-| `FILM_PATTERN` | `duna` | podřetězec názvu filmu (case-insensitive) |
-| `AUDITORIUM_PATTERN` | `imax` | podřetězec názvu sálu |
-| `HORIZON_DAYS` | `180` | jak daleko dopředu se ptát |
-| `HINT_ATTR` | `70-mm` | atribut pro levné dohledání kandidátských kin |
-| `REQUEST_DELAY` | `0.25` | pauza mezi dotazy na API (s) |
+The behaviour can be changed with environment variables in the workflow:
 
-Hlídat cokoli jiného (třeba `FILM_PATTERN=dune`, `AUDITORIUM_PATTERN=4dx`) tedy
-znamená přepsat dvě proměnné a smazat `state/seen.json`.
+| Variable | Value here | Meaning |
+|---|---|---|
+| `FILM_PATTERN` | `třetí` | part of the film's (Czech) name, case-insensitive |
+| `FILM_DISPLAY` | `Dune: Part Three` | film name used in issue titles |
+| `AUDITORIUM_PATTERN` | `imax` | part of the hall's name |
+| `HORIZON_DAYS` | `180` | how far ahead to look |
+| `HINT_ATTR` | `70-mm` | attribute used to cheaply find candidate cinemas |
+| `REQUEST_DELAY` | `0.25` | pause between API requests (seconds) |
 
-## Chci to hlídat taky (fork)
+To watch something else, change `FILM_PATTERN` (and `FILM_DISPLAY`, and `AUDITORIUM_PATTERN` if needed) in the workflow and clear `state/seen.json`.
 
-Watchdog nepotřebuje žádné tokeny ani secrets — API Cinema City je veřejné
-a na zakládání issues stačí vestavěný `GITHUB_TOKEN`. Rozjedeš ho takhle:
+## Running it by hand
 
-1. **Forkni** si tohle repo.
-2. **Settings → General → Features → zaškrtni `Issues`.** Forky mají issues
-   vypnuté a bez nich by watchdog neměl kudy hlásit.
-3. **Actions → „I understand my workflows, go ahead and enable them".**
-   GitHub v forcích naplánované workflows nespouští, dokud je nepovolíš.
-4. Hotovo. Issues se zakládají a přiřazují tobě, protože workflow používá
-   `${{ github.repository_owner }}` — nic přepisovat nemusíš.
+Actions → Cinema City watchdog → Run workflow. Ticking **force_report** reports all current showtimes, including known ones — handy for checking it's alive, or as "show me what's on right now".
 
-Stav v `state/seen.json` se forkne s sebou, takže tě to nezasype aktuálním
-rozpisem a ozve se až s prvním novým termínem. Chceš-li hned vidět, co se
-hraje teď, spusť workflow ručně s `force_report`.
+## Maintenance
 
-Hlídat jiný film než Dunu: přepiš `FILM_PATTERN` (a případně
-`AUDITORIUM_PATTERN`) ve workflow a smaž obsah `state/seen.json`.
-
-## Ruční spuštění
-
-**Actions → Cinema City watchdog → Run workflow**. Zaškrtnutí *force_report*
-nahlásí všechny aktuální termíny, i ty už známé — hodí se na ověření, že to žije,
-nebo jako „ukaž mi, co teď hrajou“.
-
-```bash
-gh workflow run watch.yml --repo TarkDetrius/cinemacity-watchdog -f force_report=true
-```
-
-## Lokální spuštění
-
-Čisté Python 3, žádné závislosti:
-
-```bash
-python3 watch.py --state state/seen.json
-```
-
-Užitečné přepínače: `--seed` (jen zapíše stav, nic nehlásí — dobré po změně
-filtru), `--force-report` (vypíše vše bez ohledu na stav).
-
-## Údržba
-
-- **Kvóta Actions:** repo je záměrně veřejné — u veřejných rep jsou minuty
-  Actions zdarma bez limitu. Kdyby se překlopilo na privátní, běhy by se začaly
-  počítat do free limitu 2 000 minut měsíčně a půlhodinová kadence by ho
-  přečerpala; pak je potřeba zároveň zpomalit cron (např. `23 */2 * * *`).
-- **60denní pauza:** GitHub automaticky vypne cron, pokud v repu 60 dní nic
-  nepřibude. Tady to nehrozí — workflow si sám commituje stav.
-- **Až Duna dohraje,** watchdog jen přestane cokoli hlásit. Buď ho vypni
-  (Actions → *Disable workflow*), nebo přepiš `FILM_PATTERN` na další film.
-- Kdyby Cinema City API změnilo, workflow spadne s chybou a GitHub o tom
-  pošle e-mail.
+- **Actions quota:** the repo is public on purpose — Actions minutes are free and unlimited for public repos. If it were made private, runs would count against the free 2,000 minutes a month and this schedule would use them up; you'd then need a slower cron (e.g. `23 */2 * * *`).
+- **60-day pause:** GitHub automatically disables scheduled workflows after 60 days with no repo activity. That won't happen here — the workflow commits its own state.
+- **When Dune's run ends,** the watchdog just stops reporting anything. Either turn it off (Actions → Cinema City watchdog → Disable workflow) or change `FILM_PATTERN` to another film.
+- **If the Cinema City API changes,** the workflow will fail with an error and GitHub will email you about it.
