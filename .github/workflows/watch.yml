@@ -3,16 +3,17 @@ name: Cinema City watchdog
 # Checks the Cinema City schedule and, when new Dune: Part Three showtimes
 # appear in IMAX, opens an issue (GitHub then sends an email and a push to the app).
 #
-# Scheduled 4 times an hour even though the goal is detection within ~30 minutes:
-# GitHub drops scheduled runs under load (measured 1 in 8). Extra runs cost
-# nothing (public repo) and break nothing — reporting is driven by the state in
-# state/seen.json, not by the clock, so an extra run just finds nothing changed
-# and stays quiet. Minutes are deliberately off :00 and :30 and spread out to
-# avoid the busiest moments.
+# How it keeps running: GitHub's own scheduler ("schedule" below) proved far too
+# unreliable for this - its runs arrive hours late or not at all. So every run
+# queues the next one itself: after the check, the "next" job waits about
+# 10 minutes (the wait timer on the "ten-minute-wait" environment, which uses no
+# runner time) and then starts this workflow again. The hourly cron line is only
+# a backup that restarts the chain if it ever breaks.
+#
+# To stop it: Actions > Cinema City watchdog > "..." menu > Disable workflow.
 on:
   schedule:
-    - cron: "9,38 * * * *"
-    - cron: "21,51 * * * *"
+    - cron: "17 * * * *"
   workflow_dispatch:
     inputs:
       force_report:
@@ -20,19 +21,19 @@ on:
         type: boolean
         default: false
 
-# The state is committed back to the repo — concurrent runs would overwrite each other's commit.
-concurrency:
-  group: watchdog
-  cancel-in-progress: false
-
 permissions:
   contents: write
   issues: write
+  actions: write
 
 jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # The state is committed back to the repo, so two checks must not run at once.
+    concurrency:
+      group: watchdog
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
@@ -69,7 +70,7 @@ jobs:
             --body-file report.md \
             --assignee "${{ github.repository_owner }}")
           echo "Created: $url"
-          # The issue is only a delivery channel for the notification — the email
+          # The issue is only a delivery channel for the notification - the email
           # goes out when it's created, so it's closed right away and the list of
           # open issues stays empty. The content stays readable under closed issues.
           gh issue close "$url" --reason completed
@@ -84,10 +85,85 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add state/seen.json
           git commit -m "Update schedule state ($(date -u '+%Y-%m-%d %H:%M UTC'))"
-          # Another commit may have landed meanwhile — rebase and push again.
+          # Another commit may have landed meanwhile - rebase and push again.
           for i in 1 2 3; do
-            git pull --rebase --quiet origin "${GITHUB_REF_NAME}" && git push && exit 0
+            git pull --rebase --quiet origin "$GITHUB_REF_NAME" && git push && exit 0
             sleep 5
           done
           echo "::error::Pushing the state failed."
+          exit 1
+      - name: Raise or clear the check-failed warning
+        # Runs started by the chain belong to the Actions bot, so GitHub would not
+        # notify anyone when one fails. This opens one issue (assigned to the owner,
+        # so it reaches the phone) when a check fails and closes it when checks work
+        # again. Only one is open at a time, so a long outage means one alert.
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          title="Watchdog problem: a check failed"
+          open=$(gh issue list --state open --limit 50 --json number,title \
+            --jq "[.[] | select(.title == \"$title\")][0].number // empty")
+          if [ "$JOB_STATUS" = "failure" ]; then
+            if [ -z "$open" ]; then
+              gh issue create --title "$title" --assignee "$OWNER" \
+                --body "A check of the Cinema City schedule failed, so new showtimes could be missed until this is fixed. Failed run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID - this issue closes itself as soon as a check succeeds again."
+            fi
+          elif [ -n "$open" ]; then
+            gh issue close "$open" --comment "Recovered: the latest check succeeded."
+          fi
+
+  next:
+    name: Queue the next check
+    needs: check
+    # Runs after a failed check too, so one bad check does not stop the chain.
+    # Cancelling a run does stop it.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # The environment's 10-minute wait timer is the pause between checks.
+    environment:
+      name: ten-minute-wait
+      deployment: false
+    steps:
+      - name: Start the next check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # Stop quietly if the workflow has been disabled.
+          state=$(gh api "repos/$GH_REPO/actions/workflows/watch.yml" --jq .state)
+          if [ "$state" != "active" ]; then
+            echo "Workflow is $state, not queuing another check."
+            exit 0
+          fi
+
+          # Safety net: never loop faster than about every 10 minutes, even if the
+          # environment's wait timer is removed (then this waits on the runner instead).
+          started=$(gh api "repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID" --jq .run_started_at)
+          elapsed=$(( $(date +%s) - $(date -d "$started" +%s) ))
+          if [ "$elapsed" -lt 540 ]; then
+            sleep $(( 540 - elapsed ))
+          fi
+
+          # If a newer run is already under way (a manual run or the backup cron),
+          # it carries the chain on, so do not start a second one.
+          newer=$(gh api "repos/$GH_REPO/actions/workflows/watch.yml/runs?per_page=20" \
+            --jq "[.workflow_runs[] | select(.run_number > $GITHUB_RUN_NUMBER and .status != \"completed\")] | length")
+          if [ "$newer" -gt 0 ]; then
+            echo "A newer run is already under way, leaving the next check to it."
+            exit 0
+          fi
+
+          for attempt in 1 2 3; do
+            if gh workflow run watch.yml --ref "$GITHUB_REF_NAME"; then
+              echo "Next check queued."
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "::error::Could not queue the next check."
           exit 1
