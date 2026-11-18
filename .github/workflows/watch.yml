@@ -20,6 +20,10 @@ on:
         description: "Report all current showtimes, including ones already known"
         type: boolean
         default: false
+      test_alert:
+        description: "Send a test Pushover alert to your phone"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -58,6 +62,7 @@ jobs:
             --title title.txt \
             ${{ inputs.force_report && '--force-report' || '' }}
       - name: Open an issue with the new showtimes
+        id: issue
         if: steps.watch.outputs.has_news == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -70,10 +75,52 @@ jobs:
             --body-file report.md \
             --assignee "${{ github.repository_owner }}")
           echo "Created: $url"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
           # The issue is only a delivery channel for the notification - the email
           # goes out when it's created, so it's closed right away and the list of
           # open issues stays empty. The content stays readable under closed issues.
           gh issue close "$url" --reason completed
+      - name: Ring the phone with Pushover
+        # Emergency priority: gets through silent mode and Do Not Disturb (if Critical
+        # Alerts are allowed in the Pushover app) and repeats every minute for up to
+        # 30 minutes until acknowledged. Only for new showtimes, not cancellations.
+        # Needs the PUSHOVER_TOKEN and PUSHOVER_USER repository secrets; skipped without them.
+        if: ${{ steps.watch.outputs.has_news == 'true' || inputs.test_alert }}
+        continue-on-error: true
+        env:
+          PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
+          PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
+          ISSUE_URL: ${{ steps.issue.outputs.url }}
+          TEST_ALERT: ${{ inputs.test_alert }}
+        run: |
+          if [ -z "$PUSHOVER_TOKEN" ] || [ -z "$PUSHOVER_USER" ]; then
+            echo "Pushover secrets not set, skipping."
+            exit 0
+          fi
+          if [ "$TEST_ALERT" = "true" ] && [ ! -f title.txt ]; then
+            title="Test: Dune watchdog alert"
+            message="This is what a new-showtimes alert looks like. Tap to acknowledge it."
+            url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/issues?q=is%3Aissue"
+          else
+            if ! grep -q "new showtime" title.txt; then
+              echo "Not new showtimes, no Pushover alert."
+              exit 0
+            fi
+            title=$(sed 's/^🎬 //' title.txt)
+            message=$(grep '^- ' report.md | sed 's/ — \[buy tickets\].*//; s/^- //' | head -15)
+            url="${ISSUE_URL:-$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/issues?q=is%3Aissue}"
+          fi
+          curl -sS --fail-with-body \
+            --form-string "token=$PUSHOVER_TOKEN" \
+            --form-string "user=$PUSHOVER_USER" \
+            --form-string "title=$title" \
+            --form-string "message=$message" \
+            --form-string "url=$url" \
+            --form-string "url_title=Open the alert with ticket links" \
+            --form-string "priority=2" \
+            --form-string "retry=60" \
+            --form-string "expire=1800" \
+            https://api.pushover.net/1/messages.json
       - name: Save the state back to the repo
         run: |
           rm -f report.md title.txt
